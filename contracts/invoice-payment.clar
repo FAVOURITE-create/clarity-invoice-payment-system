@@ -4,10 +4,13 @@
     {
         amount: uint,
         sender: principal,
-        recipient: principal,
+        recipient: principal, 
         due-date: uint,
         paid: bool,
-        cancelled: bool
+        cancelled: bool,
+        payment-memo: (optional (string-utf8 100)),
+        recurrent: bool,
+        recurrence-period: (optional uint)
     }
 )
 
@@ -21,10 +24,16 @@
 (define-constant err-insufficient-funds (err u103))
 (define-constant err-past-due (err u104))
 (define-constant err-cancelled (err u105))
+(define-constant err-invalid-recurrence (err u106))
 
 ;; Create a new invoice
-(define-public (create-invoice (amount uint) (recipient principal) (due-date uint))
+(define-public (create-invoice (amount uint) (recipient principal) (due-date uint) 
+                             (memo (optional (string-utf8 100))) 
+                             (recurrent bool) (recurrence-period (optional uint)))
     (let ((invoice-id (var-get invoice-counter)))
+        (asserts! (or (not recurrent) 
+                    (and recurrent (is-some recurrence-period))) 
+                err-invalid-recurrence)
         (map-insert invoices
             { invoice-id: invoice-id }
             {
@@ -33,7 +42,10 @@
                 recipient: recipient,
                 due-date: due-date,
                 paid: false,
-                cancelled: false
+                cancelled: false,
+                payment-memo: memo,
+                recurrent: recurrent,
+                recurrence-period: recurrence-period
             }
         )
         (var-set invoice-counter (+ invoice-id u1))
@@ -51,6 +63,20 @@
         (asserts! (not (get cancelled invoice)) err-cancelled)
         (asserts! (<= current-time (get due-date invoice)) err-past-due)
         (try! (stx-transfer? (get amount invoice) tx-sender (get recipient invoice)))
+        
+        ;; If recurrent, create next invoice
+        (if (and (get recurrent invoice) (is-some (get recurrence-period invoice)))
+            (create-invoice 
+                (get amount invoice)
+                (get recipient invoice)
+                (+ (get due-date invoice) (unwrap-panic (get recurrence-period invoice)))
+                (get payment-memo invoice)
+                true
+                (get recurrence-period invoice)
+            )
+            (ok true)
+        )
+        
         (map-set invoices 
             {invoice-id: invoice-id}
             (merge invoice {paid: true})
